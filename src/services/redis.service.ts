@@ -22,6 +22,7 @@ export class RedisService {
         host: config.redis.host,
         port: config.redis.port,
         password: config.redis.password,
+        tls: config.redis.tls ? {} : undefined,
         lazyConnect: true,
         maxRetriesPerRequest: 3,
         retryStrategy: (times) => {
