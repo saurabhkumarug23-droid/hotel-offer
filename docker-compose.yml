@@ -1,0 +1,130 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hotel-orchestrator-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - hotel-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hotel-orchestrator-postgres
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - hotel-network
+
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    container_name: hotel-orchestrator-temporal
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+      - DEFAULT_NAMESPACE=default
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z -w 3 "$$(hostname -i)" 7233']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - hotel-network
+
+  temporal-ui:
+    image: temporalio/ui:2.56.4
+    container_name: hotel-orchestrator-temporal-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - hotel-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hotel-orchestrator-api
+    ports:
+      - "3001:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_USE_MOCK=false
+      - CACHE_TTL_SECONDS=300
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=hotel-offers-queue
+      - TEMPORAL_STANDALONE_MODE=false
+      - TEMPORAL_STANDALONE_FALLBACK=false
+      - SUPPLIER_A_URL=http://localhost:3000/supplierA/hotels
+      - SUPPLIER_B_URL=http://localhost:3000/supplierB/hotels
+    depends_on:
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    networks:
+      - hotel-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hotel-orchestrator-worker
+    command: ["node", "dist/workers/worker.js"]
+    environment:
+      - NODE_ENV=production
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=hotel-offers-queue
+      - SUPPLIER_A_URL=http://api:3000/supplierA/hotels
+      - SUPPLIER_B_URL=http://api:3000/supplierB/hotels
+    depends_on:
+      temporal:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - hotel-network
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  hotel-network:
+    driver: bridge
